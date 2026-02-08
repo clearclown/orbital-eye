@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.env
+models/*.pt
+models/*.onnx
+data/cache/
+data/imagery/
+*.tif
+*.tiff
+!data/samples/*.tif
+.ruff_cache/
+.mypy_cache/
