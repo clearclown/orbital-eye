@@ -6,148 +6,238 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/clearclown/orbital-eye/internal/geo"
 )
 
-// Sentinel2 fetches imagery from the Copernicus Data Space Ecosystem (CDSE).
-// Free, open access, 10m resolution, 5-day revisit.
-// Docs: https://documentation.dataspace.copernicus.eu/
+const (
+	stacSearchURL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+	stacSignURL   = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
+)
+
 type Sentinel2 struct {
-	clientID     string
-	clientSecret string
-	token        string
-	tokenExpiry  time.Time
-	httpClient   *http.Client
+	httpClient *http.Client
+	cacheDir   string
 }
 
-type S2SearchResult struct {
-	Features []S2Feature `json:"features"`
+type STACSearchRequest struct {
+	Collections []string               `json:"collections"`
+	Bbox        [4]float64             `json:"bbox"`
+	Datetime    string                 `json:"datetime"`
+	Limit       int                    `json:"limit"`
+	Query       map[string]interface{} `json:"query,omitempty"`
+	SortBy      []STACSortBy           `json:"sortby,omitempty"`
 }
 
-type S2Feature struct {
-	ID         string     `json:"id"`
-	Properties S2Props    `json:"properties"`
-	Assets     S2Assets   `json:"assets,omitempty"`
+type STACSortBy struct {
+	Field     string `json:"field"`
+	Direction string `json:"direction"`
 }
 
-type S2Props struct {
-	DateTime     string  `json:"datetime"`
-	CloudCover   float64 `json:"eo:cloud_cover"`
-	Platform     string  `json:"platform"`
-	GSD          float64 `json:"gsd"`
-	Constellation string `json:"constellation"`
+type STACResponse struct {
+	Features []STACFeature `json:"features"`
 }
 
-type S2Assets struct {
-	Visual S2Asset `json:"visual,omitempty"`
-	B02    S2Asset `json:"B02,omitempty"` // Blue
-	B03    S2Asset `json:"B03,omitempty"` // Green
-	B04    S2Asset `json:"B04,omitempty"` // Red
-	B08    S2Asset `json:"B08,omitempty"` // NIR
+type STACFeature struct {
+	ID         string                    `json:"id"`
+	Properties STACProperties            `json:"properties"`
+	Assets     map[string]STACAsset      `json:"assets"`
+	Bbox       [4]float64                `json:"bbox"`
 }
 
-type S2Asset struct {
+type STACProperties struct {
+	DateTime   string  `json:"datetime"`
+	CloudCover float64 `json:"eo:cloud_cover"`
+	GSD        float64 `json:"gsd"`
+	Platform   string  `json:"platform"`
+}
+
+type STACAsset struct {
 	Href string `json:"href"`
 	Type string `json:"type"`
 }
 
-// BBox represents a geographic bounding box [west, south, east, north].
-type BBox [4]float64
-
-// SearchParams for STAC catalog search.
 type SearchParams struct {
-	BBox       BBox
+	BBox       geo.BBox
 	DateFrom   time.Time
 	DateTo     time.Time
-	MaxCloud   float64 // 0-100
+	MaxCloud   float64
 	MaxResults int
-	Collection string // "sentinel-2-l2a"
 }
 
-func NewSentinel2(clientID, clientSecret string) *Sentinel2 {
+type ImageResult struct {
+	ID         string
+	Date       time.Time
+	CloudCover float64
+	GSD        float64
+	Platform   string
+	LocalPath  string
+	Assets     map[string]string
+}
+
+func NewSentinel2(cacheDir string) *Sentinel2 {
 	return &Sentinel2{
-		clientID:     clientID,
-		clientSecret: clientSecret,
-		httpClient:   &http.Client{Timeout: 60 * time.Second},
+		httpClient: &http.Client{Timeout: 120 * time.Second},
+		cacheDir:   cacheDir,
 	}
 }
 
-// Search finds Sentinel-2 scenes matching the parameters using the STAC API.
-func (s *Sentinel2) Search(ctx context.Context, params SearchParams) ([]S2Feature, error) {
-	if params.Collection == "" {
-		params.Collection = "sentinel-2-l2a"
-	}
+func (s *Sentinel2) Search(ctx context.Context, params SearchParams) ([]ImageResult, error) {
 	if params.MaxResults == 0 {
-		params.MaxResults = 20
+		params.MaxResults = 10
 	}
 
-	// Use Planetary Computer STAC API (no auth needed for search)
-	baseURL := "https://planetarycomputer.microsoft.com/api/stac/v1/search"
-
-	body := map[string]interface{}{
-		"collections": []string{params.Collection},
-		"bbox":        params.BBox,
-		"datetime":    fmt.Sprintf("%s/%s", params.DateFrom.Format(time.RFC3339), params.DateTo.Format(time.RFC3339)),
-		"limit":       params.MaxResults,
-		"query": map[string]interface{}{
-			"eo:cloud_cover": map[string]interface{}{
-				"lte": params.MaxCloud,
-			},
+	reqBody := STACSearchRequest{
+		Collections: []string{"sentinel-2-l2a"},
+		Bbox:        [4]float64{params.BBox.West, params.BBox.South, params.BBox.East, params.BBox.North},
+		Datetime:    fmt.Sprintf("%s/%s", params.DateFrom.Format(time.RFC3339), params.DateTo.Format(time.RFC3339)),
+		Limit:       params.MaxResults,
+		Query: map[string]interface{}{
+			"eo:cloud_cover": map[string]interface{}{"lte": params.MaxCloud},
+		},
+		SortBy: []STACSortBy{
+			{Field: "properties.eo:cloud_cover", Direction: "asc"},
 		},
 	}
 
-	bodyJSON, _ := json.Marshal(body)
-	_ = bodyJSON
+	bodyBytes, _ := json.Marshal(reqBody)
+	req, err := http.NewRequestWithContext(ctx, "POST", stacSearchURL, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 
-	// TODO: Make HTTP request and parse response
-	return nil, fmt.Errorf("not yet implemented")
-}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("STAC search failed: %w", err)
+	}
+	defer resp.Body.Close()
 
-// Download fetches the actual imagery for a scene.
-func (s *Sentinel2) Download(ctx context.Context, feature S2Feature, outputDir string) (string, error) {
-	// TODO: Download COG tiles via signed URLs
-	return "", fmt.Errorf("not yet implemented")
-}
-
-// FetchForLocation is a convenience method that searches and downloads the best recent image.
-func (s *Sentinel2) FetchForLocation(ctx context.Context, lat, lon, radiusKm float64, maxCloud float64) (string, error) {
-	// Convert lat/lon + radius to bbox
-	degPerKm := 1.0 / 111.0 // approximate
-	dlat := radiusKm * degPerKm
-	dlon := radiusKm * degPerKm / 1.0 // TODO: adjust for latitude
-
-	bbox := BBox{lon - dlon, lat - dlat, lon + dlon, lat + dlat}
-
-	params := SearchParams{
-		BBox:     bbox,
-		DateFrom: time.Now().AddDate(0, -1, 0), // Last month
-		DateTo:   time.Now(),
-		MaxCloud: maxCloud,
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("STAC search returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	features, err := s.Search(ctx, params)
+	var stacResp STACResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stacResp); err != nil {
+		return nil, fmt.Errorf("parse STAC response: %w", err)
+	}
+
+	var results []ImageResult
+	for _, f := range stacResp.Features {
+		dt, _ := time.Parse(time.RFC3339, f.Properties.DateTime)
+		r := ImageResult{
+			ID:         f.ID,
+			Date:       dt,
+			CloudCover: f.Properties.CloudCover,
+			GSD:        f.Properties.GSD,
+			Platform:   f.Properties.Platform,
+			Assets:     make(map[string]string),
+		}
+		for k, v := range f.Assets {
+			r.Assets[k] = v.Href
+		}
+		results = append(results, r)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CloudCover < results[j].CloudCover
+	})
+
+	return results, nil
+}
+
+func (s *Sentinel2) signURL(ctx context.Context, rawURL string) (string, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", stacSignURL+"?href="+rawURL, nil)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
-	if len(features) == 0 {
-		return "", fmt.Errorf("no imagery found for location (%.4f, %.4f)", lat, lon)
+	defer resp.Body.Close()
+	var result struct {
+		Href string `json:"href"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result.Href == "" {
+		return rawURL, nil
+	}
+	return result.Href, nil
+}
+
+func (s *Sentinel2) Download(ctx context.Context, result ImageResult, bands []string) (string, error) {
+	outDir := filepath.Join(s.cacheDir, result.ID)
+	os.MkdirAll(outDir, 0755)
+
+	if len(bands) == 0 {
+		bands = []string{"visual"} // True-color composite
 	}
 
-	return s.Download(ctx, features[0], "")
+	for _, band := range bands {
+		href, ok := result.Assets[band]
+		if !ok {
+			continue
+		}
+
+		signed, err := s.signURL(ctx, href)
+		if err != nil {
+			return "", fmt.Errorf("sign URL for %s: %w", band, err)
+		}
+
+		outPath := filepath.Join(outDir, band+".tif")
+		if _, err := os.Stat(outPath); err == nil {
+			continue // Already downloaded
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, "GET", signed, nil)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("download %s: %w", band, err)
+		}
+		defer resp.Body.Close()
+
+		f, err := os.Create(outPath)
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(f, resp.Body)
+		f.Close()
+		if err != nil {
+			return "", fmt.Errorf("write %s: %w", band, err)
+		}
+
+		fmt.Printf("Downloaded %s → %s\n", band, outPath)
+	}
+
+	return outDir, nil
 }
 
-// Landsat fetches from USGS via STAC (also on Planetary Computer).
-type Landsat struct {
-	httpClient *http.Client
-}
+func (s *Sentinel2) FetchBest(ctx context.Context, lat, lon, radiusKm, maxCloud float64) (*ImageResult, string, error) {
+	bbox := geo.BBoxFromCenter(geo.Point{Lat: lat, Lon: lon}, radiusKm)
 
-func NewLandsat() *Landsat {
-	return &Landsat{httpClient: &http.Client{Timeout: 60 * time.Second}}
-}
+	results, err := s.Search(ctx, SearchParams{
+		BBox:       bbox,
+		DateFrom:   time.Now().AddDate(0, -3, 0),
+		DateTo:     time.Now(),
+		MaxCloud:   maxCloud,
+		MaxResults: 5,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if len(results) == 0 {
+		return nil, "", fmt.Errorf("no imagery found for (%.4f, %.4f) with <%g%% cloud", lat, lon, maxCloud)
+	}
 
-func (l *Landsat) Search(ctx context.Context, params SearchParams) ([]S2Feature, error) {
-	params.Collection = "landsat-c2-l2"
-	// TODO: implement using Planetary Computer STAC
-	return nil, fmt.Errorf("not yet implemented")
+	best := &results[0]
+	path, err := s.Download(ctx, *best, []string{"visual"})
+	if err != nil {
+		return nil, "", err
+	}
+
+	return best, path, nil
 }

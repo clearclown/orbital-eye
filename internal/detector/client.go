@@ -3,77 +3,78 @@ package detector
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
+	pb "github.com/clearclown/orbital-eye/proto/gen"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Client connects to the Python AI Worker via gRPC.
 type Client struct {
-	conn    *grpc.ClientConn
-	address string
-}
-
-// Detection represents a detected object.
-type Detection struct {
-	ClassName       string            `json:"class_name"`
-	Confidence      float32           `json:"confidence"`
-	BBoxPixel       [4]float32        `json:"bbox_pixel"` // xmin, ymin, xmax, ymax
-	GeoCenter       [2]float64        `json:"geo_center"` // lat, lon
-	EstLengthMeters float32           `json:"est_length_m"`
-	EstWidthMeters  float32           `json:"est_width_m"`
-	Attributes      map[string]string `json:"attributes"`
-}
-
-// ChangeRegion represents a detected change area.
-type ChangeRegion struct {
-	BBox         [4]float32 `json:"bbox"`
-	ChangeType   string     `json:"change_type"`
-	Significance float32    `json:"significance"`
-	GeoCenter    [2]float64 `json:"geo_center"`
+	conn   *grpc.ClientConn
+	client pb.DetectorServiceClient
 }
 
 func NewClient(address string) (*Client, error) {
-	return &Client{address: address}, nil
-}
-
-func (c *Client) Connect(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, c.address,
+	conn, err := grpc.DialContext(ctx, address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(100*1024*1024),
+			grpc.MaxCallSendMsgSize(100*1024*1024),
+		),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to connect to AI worker at %s: %w", c.address, err)
+		return nil, fmt.Errorf("connect to AI worker at %s: %w", address, err)
 	}
-	c.conn = conn
-	return nil
+
+	return &Client{
+		conn:   conn,
+		client: pb.NewDetectorServiceClient(conn),
+	}, nil
 }
 
-func (c *Client) Close() error {
+func (c *Client) Close() {
 	if c.conn != nil {
-		return c.conn.Close()
+		c.conn.Close()
 	}
-	return nil
 }
 
-// DetectObjects sends an image to the AI worker for detection.
-func (c *Client) DetectObjects(ctx context.Context, imagePath string, targets []string, confidence float32) ([]Detection, error) {
-	// TODO: Use generated proto client
-	return nil, fmt.Errorf("not yet implemented")
+func (c *Client) Health(ctx context.Context) (*pb.HealthResponse, error) {
+	return c.client.Health(ctx, &pb.HealthRequest{})
 }
 
-// DetectChanges compares two images.
-func (c *Client) DetectChanges(ctx context.Context, beforePath, afterPath string, sensitivity float32) ([]ChangeRegion, error) {
-	// TODO: Use generated proto client
-	return nil, fmt.Errorf("not yet implemented")
+func (c *Client) DetectFromFile(ctx context.Context, imagePath string, targets []string, confidence float32, gsd float32) (*pb.DetectResponse, error) {
+	imgData, err := os.ReadFile(imagePath)
+	if err != nil {
+		return nil, fmt.Errorf("read image: %w", err)
+	}
+
+	return c.client.DetectObjects(ctx, &pb.DetectRequest{
+		ImageData:            imgData,
+		TargetClasses:        targets,
+		ConfidenceThreshold:  confidence,
+		GsdMeters:            gsd,
+	})
 }
 
-// Health checks the AI worker status.
-func (c *Client) Health(ctx context.Context) (bool, []string, error) {
-	// TODO: Use generated proto client
-	return false, nil, fmt.Errorf("not yet implemented")
+func (c *Client) DetectFromPath(ctx context.Context, imagePath string, targets []string, confidence float32, gsd float32, topLat, topLon float64) (*pb.DetectResponse, error) {
+	return c.client.DetectObjects(ctx, &pb.DetectRequest{
+		ImagePath:           imagePath,
+		TargetClasses:       targets,
+		ConfidenceThreshold: confidence,
+		GsdMeters:           gsd,
+		TopLeft:             &pb.GeoPoint{Latitude: topLat, Longitude: topLon},
+	})
+}
+
+func (c *Client) DetectChangesFromFiles(ctx context.Context, beforePath, afterPath string, sensitivity float32) (*pb.ChangeResponse, error) {
+	return c.client.DetectChanges(ctx, &pb.ChangeRequest{
+		ImageBeforePath: beforePath,
+		ImageAfterPath:  afterPath,
+		Sensitivity:     sensitivity,
+	})
 }
