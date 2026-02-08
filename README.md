@@ -4,177 +4,132 @@
 
 ## Overview
 
-Orbital Eye automates the labor-intensive process of satellite imagery analysis for open-source intelligence. It detects military installations, counts vessels and aircraft, tracks facility changes over time, and generates actionable intelligence reports — tasks that currently require trained analysts spending hours per image.
+Orbital Eye automates the labor-intensive process of satellite imagery analysis for open-source intelligence. It detects military installations, counts vessels and aircraft, tracks facility changes over time, and generates actionable intelligence reports.
 
-Inspired by organizations like [DEEP DIVE](https://deepdive146.com/) that perform civilian satellite intelligence analysis, this project aims to democratize access to these capabilities.
+**Architecture**: Go (core/CLI/API) + Python AI worker (gRPC) for ML inference.
 
 ## Features
 
-### 🎯 Object Detection
-- **Vessel detection & classification**: Surface combatants, submarines, merchant ships, fishing vessels
-- **Aircraft detection**: Fighter jets, bombers, transport aircraft, helicopters, UAVs on airfields
-- **Vehicle detection**: Tanks, APCs, artillery, TELs (Transporter Erector Launchers), trucks
-- **Building classification**: Hardened aircraft shelters, radar installations, SAM sites, bunkers
-
-### 🏗️ Facility Detection
-- **Military base identification**: Automated detection of airfields, naval bases, army installations
-- **Nuclear facilities**: Reactor buildings, cooling towers, reprocessing plants
-- **Missile sites**: Launch pads, TEL garages, support facilities
-- **Port infrastructure**: Dry docks, piers, cranes, submarine pens
-
-### 📡 Change Detection
-- **Temporal comparison**: Before/after analysis of the same location
-- **Activity monitoring**: Track deployment patterns, construction progress, operational tempo
-- **Alert generation**: Automated notifications when significant changes are detected
-- **Historical trending**: Long-term activity pattern analysis
-
-### 🗺️ Geospatial Analysis
-- **Measurement**: Automated length/area measurement of objects and facilities
-- **Clustering**: Group related facilities and installations
-- **Pattern of life**: Daily/seasonal activity pattern analysis
-- **Attribution**: Match detected objects to known equipment databases
-
-### 📊 Reporting
-- **HTML/PDF reports**: Annotated imagery with findings
-- **GeoJSON export**: For integration with GIS tools (QGIS, Google Earth)
-- **API**: REST API for integration with other intelligence platforms
-- **Dashboard**: Web-based monitoring dashboard
+- 🎯 **Object Detection** — Vessels, aircraft, vehicles, facilities (YOLOv8)
+- 🏗️ **Facility Detection** — Airfields, naval bases, missile sites, nuclear facilities
+- 📡 **Change Detection** — Temporal before/after analysis with automated alerts
+- 🗺️ **Geospatial Analysis** — Measurement, clustering, pattern-of-life
+- 📊 **Reporting** — HTML/PDF reports, GeoJSON export, web dashboard
 
 ## Quick Start
 
 ```bash
-# Install
-pip install orbital-eye
+# Build
+make build
 
-# Analyze a satellite image
+# Start AI worker (separate terminal)
+make ai-deps
+make ai-serve
+
+# Fetch imagery
+orbital-eye fetch --lat 18.2269 --lon 109.5331 --radius 10 --source sentinel2
+
+# Detect objects
 orbital-eye detect image.tif --objects vessels,aircraft
 
-# Monitor a location for changes
+# Monitor a location
 orbital-eye monitor --lat 38.9 --lon 125.7 --interval 7d
 
-# Generate intelligence report
-orbital-eye report --location "Yulin Naval Base" --period 30d --output report.html
+# Generate report
+orbital-eye report --location "Yulin Naval Base" --period 30d
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Go (Core)                                              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │ CLI      │ │ API      │ │Collector │ │ Visualizer│  │
+│  │ (typer)  │ │ (HTTP)   │ │Sentinel-2│ │ Report/Map│  │
+│  └────┬─────┘ └────┬─────┘ │Landsat   │ └───────────┘  │
+│       │             │       │Planet    │                 │
+│       └──────┬──────┘       └──────────┘                │
+│              │                                           │
+│              │ gRPC                                      │
+│──────────────┼───────────────────────────────────────────│
+│              ▼                                           │
+│  Python (AI Worker)                                     │
+│  ┌──────────────────────────────────────────────┐       │
+│  │ Object Detection (YOLOv8)                     │       │
+│  │ Change Detection (Siamese UNet)               │       │
+│  │ Classification (ResNet/EfficientNet)          │       │
+│  │ Super-Resolution                              │       │
+│  └──────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Data Sources
 
 ### Free / Open Access
-| Source | Resolution | Revisit | Coverage |
-|--------|-----------|---------|----------|
-| Sentinel-2 (ESA) | 10m | 5 days | Global |
-| Landsat 8/9 (USGS) | 15-30m | 16 days | Global |
-| MODIS (NASA) | 250m-1km | Daily | Global |
+| Source | Resolution | Revisit | API |
+|--------|-----------|---------|-----|
+| Sentinel-2 (ESA) | 10m | 5 days | Planetary Computer STAC |
+| Landsat 8/9 (USGS) | 15-30m | 16 days | Planetary Computer STAC |
+| MODIS (NASA) | 250m | Daily | NASA Earthdata |
 
-### Commercial (API integration)
+### Commercial (optional)
 | Source | Resolution | Notes |
 |--------|-----------|-------|
-| Planet (PlanetScope) | 3m | Daily global coverage |
-| Maxar (WorldView) | 30cm | Highest resolution |
-| Airbus (Pléiades Neo) | 30cm | Tasking available |
-| BlackSky | 1m | Rapid revisit |
-| Capella Space | 0.5m SAR | All-weather, day/night |
+| Planet | 3m | Daily global |
+| Maxar | 30cm | Highest resolution |
+| Capella Space | 0.5m SAR | All-weather |
 
-## Architecture
+## Training Data (Open)
 
+| Dataset | Objects | Images | License |
+|---------|---------|--------|---------|
+| [DOTA v2.0](https://captain-whu.github.io/DOTA/) | Ship, plane, vehicle, etc. | 11,268 | Research |
+| [xView](http://xviewdataset.org/) | 60 classes | 1,400 | CC BY-NC-SA 4.0 |
+| [ShipRSImageNet](https://github.com/zzndream/ShipRSImageNet) | 50 ship types | 3,435 | Research |
+| [HRPlanesv2](https://github.com/dilsadunsal/HRPlanesv2) | Aircraft | 2,120 | Open |
+| [RarePlanes](https://www.cosmiqworks.org/RarePlanes/) | Aircraft | 50,000 annot. | CC BY-SA 4.0 |
+| [SpaceNet](https://spacenet.ai/) | Buildings, roads | Multiple | CC BY-SA 4.0 |
+| [FAIR1M](https://gaofen-challenge.com/) | Fine-grained | 15,000+ | Research |
+
+## Development
+
+```bash
+# Prerequisites
+go 1.23+, Python 3.11+, protoc
+
+# Build everything
+make proto   # Generate gRPC stubs
+make build   # Build Go binary
+make ai-deps # Install Python deps
+
+# Run
+make ai-serve &          # Start AI worker
+./bin/orbital-eye serve   # Start API server
 ```
-orbital-eye/
-├── src/
-│   ├── collectors/          # Satellite imagery acquisition
-│   │   ├── sentinel.py      # Copernicus/Sentinel-2 API
-│   │   ├── landsat.py       # USGS EarthExplorer / Landsat
-│   │   ├── planet.py        # Planet Labs API
-│   │   └── tiles.py         # Web map tile sources
-│   ├── detectors/           # AI detection models
-│   │   ├── vessels.py       # Ship detection & classification
-│   │   ├── aircraft.py      # Aircraft detection on airfields
-│   │   ├── vehicles.py      # Military vehicle detection
-│   │   ├── facilities.py    # Base/facility classification
-│   │   └── infrastructure.py # Buildings, roads, runways
-│   ├── analyzers/           # Intelligence analysis
-│   │   ├── change.py        # Temporal change detection
-│   │   ├── measure.py       # Object measurement
-│   │   ├── activity.py      # Pattern of life analysis
-│   │   └── attribution.py   # Object → equipment database matching
-│   ├── visualizers/         # Output generation
-│   │   ├── annotate.py      # Image annotation
-│   │   ├── map.py           # Interactive map (Leaflet/Mapbox)
-│   │   ├── report.py        # HTML/PDF report generation
-│   │   └── dashboard.py     # Web dashboard (FastAPI)
-│   ├── models/              # Model management
-│   │   ├── registry.py      # Model download & versioning
-│   │   └── training.py      # Fine-tuning utilities
-│   ├── cli.py               # CLI entry point
-│   └── api.py               # REST API server
-├── models/                  # Pre-trained model weights
-├── data/
-│   ├── equipment_db/        # Known military equipment database
-│   ├── known_facilities/    # Known facility coordinates
-│   └── samples/             # Sample imagery for testing
-├── web/                     # Dashboard frontend
-├── docs/
-│   ├── methodology.md       # Detection methodology
-│   ├── data-sources.md      # Imagery source guide
-│   └── model-training.md    # Training custom models
-└── tests/
-```
-
-## Models
-
-### Pre-trained Models
-| Model | Task | Base | mAP | Notes |
-|-------|------|------|-----|-------|
-| `vessel-det-v1` | Ship detection | YOLOv8 | ~85% | Surface vessels in optical imagery |
-| `aircraft-det-v1` | Aircraft detection | YOLOv8 | ~80% | Parked aircraft on airfields |
-| `vehicle-det-v1` | Vehicle detection | YOLOv8 | ~75% | Military vehicles |
-| `facility-cls-v1` | Facility classification | ResNet-50 | ~82% | Military vs civilian |
-| `change-det-v1` | Change detection | Siamese UNet | ~78% | Structural changes |
-
-### Training Data Sources
-- [DOTA](https://captain-whu.github.io/DOTA/) — Large-scale object detection in aerial images
-- [xView](http://xviewdataset.org/) — Overhead imagery fine-grained detection
-- [DIOR](https://gcheng-nwpu.github.io/#Datasets) — Object detection in optical remote sensing
-- [SpaceNet](https://spacenet.ai/) — Building/road extraction from satellite imagery
-- [FAIR1M](https://gaofen-challenge.com/) — Fine-grained recognition in high-res imagery
-- [ShipRSImageNet](https://github.com/zzndream/ShipRSImageNet) — Ship detection dataset
-- [RarePlanes](https://www.cosmiqworks.org/RarePlanes/) — Aircraft detection dataset
-- [HRPlanesv2](https://github.com/dilsadunsal/HRPlanesv2) — Aircraft detection in Google Earth
-
-## Methodology
-
-### Detection Pipeline
-```
-Satellite Image → Preprocessing → Tiling → Object Detection → NMS → Classification → Measurement → Report
-                     ↓                                                      ↓
-              Geo-referencing                                        Equipment DB Match
-```
-
-### Change Detection Pipeline
-```
-Image_t0 + Image_t1 → Co-registration → Difference Map → Change Mask → Significance Filter → Alert
-```
-
-## Ethics & Legal
-
-- **Public data only**: Uses commercially available or open-access satellite imagery
-- **Defensive purpose**: Designed for transparency, accountability, and conflict monitoring
-- **No targeting**: Not designed for kinetic targeting or offensive operations
-- **Responsible disclosure**: Significant findings should be reported to appropriate authorities
 
 ## Roadmap
 
-- [ ] **Phase 1**: Core detection models (vessels, aircraft) with Sentinel-2
-- [ ] **Phase 2**: Change detection and temporal analysis
-- [ ] **Phase 3**: Commercial imagery integration (Planet, Maxar)
-- [ ] **Phase 4**: Web dashboard and monitoring
-- [ ] **Phase 5**: SAR imagery support (all-weather capability)
-- [ ] **Phase 6**: Fine-grained classification (ship class, aircraft type)
+- [ ] Phase 1: Sentinel-2 collector + vessel detection (YOLOv8)
+- [ ] Phase 2: Change detection pipeline
+- [ ] Phase 3: Web dashboard + monitoring
+- [ ] Phase 4: Fine-grained classification (ship/aircraft types)
+- [ ] Phase 5: SAR imagery support
+- [ ] Phase 6: Equipment database matching
+
+## Ethics & Legal
+
+- Uses **publicly available** satellite imagery and **open data** only
+- Designed for **transparency and accountability** in conflict monitoring
+- **Not** for targeting, offensive operations, or surveillance of individuals
+- Significant findings should be reported to appropriate authorities
 
 ## References
 
-- Satellite Imagery Analysis for OSINT — [Bellingcat Guide](https://www.bellingcat.com/resources/2024/01/09/using-satellite-imagery-for-osint/)
-- DEEP DIVE — [Civilian Intelligence Analysis](https://deepdive146.com/)
-- Center for Strategic and International Studies — [Beyond Parallel](https://beyondparallel.csis.org/)
-- Middlebury Institute — [Open Nuclear Network](https://opennuclear.org/)
+- [DEEP DIVE](https://deepdive146.com/) — Civilian intelligence analysis
+- [Bellingcat Satellite Guide](https://www.bellingcat.com/resources/)
+- [Beyond Parallel (CSIS)](https://beyondparallel.csis.org/)
+- [Open Nuclear Network](https://opennuclear.org/)
 
 ## License
 

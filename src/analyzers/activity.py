@@ -1,2 +1,0 @@
-"""activity analysis"""
-# TODO: implement

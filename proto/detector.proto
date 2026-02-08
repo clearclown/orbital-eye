@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package orbital_eye;
+
+option go_package = "github.com/clearclown/orbital-eye/proto/gen";
+
+// AI Worker service — Python side handles ML inference
+service DetectorService {
+  // Detect objects in a satellite image tile
+  rpc DetectObjects(DetectRequest) returns (DetectResponse);
+
+  // Classify a detected object
+  rpc ClassifyObject(ClassifyRequest) returns (ClassifyResponse);
+
+  // Compare two images for changes
+  rpc DetectChanges(ChangeRequest) returns (ChangeResponse);
+
+  // Super-resolution enhancement
+  rpc Enhance(EnhanceRequest) returns (EnhanceResponse);
+
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message BoundingBox {
+  float x_min = 1;
+  float y_min = 2;
+  float x_max = 3;
+  float y_max = 4;
+}
+
+message GeoPoint {
+  double latitude = 1;
+  double longitude = 2;
+}
+
+message Detection {
+  string class_name = 1;       // e.g. "vessel", "aircraft", "vehicle"
+  float confidence = 2;
+  BoundingBox bbox = 3;
+  GeoPoint geo_center = 4;
+  float estimated_length_m = 5;
+  float estimated_width_m = 6;
+  map<string, string> attributes = 7; // e.g. {"subclass": "submarine", "type": "094"}
+}
+
+message DetectRequest {
+  bytes image_data = 1;        // Raw image bytes (GeoTIFF or PNG tile)
+  string image_path = 2;       // Or file path on shared storage
+  repeated string target_classes = 3; // Empty = detect all
+  float confidence_threshold = 4;
+  GeoPoint top_left = 5;      // Geo-reference for the tile
+  GeoPoint bottom_right = 6;
+  float gsd_meters = 7;       // Ground sample distance
+}
+
+message DetectResponse {
+  repeated Detection detections = 1;
+  float inference_time_ms = 2;
+  string model_version = 3;
+}
+
+message ClassifyRequest {
+  bytes image_crop = 1;
+  string coarse_class = 2;    // e.g. "vessel" — want fine-grained
+  float gsd_meters = 3;
+}
+
+message ClassifyResponse {
+  string class_name = 1;
+  string subclass = 2;
+  float confidence = 3;
+  map<string, string> attributes = 4;
+}
+
+message ChangeRequest {
+  bytes image_before = 1;
+  bytes image_after = 2;
+  string image_before_path = 3;
+  string image_after_path = 4;
+  float sensitivity = 5;      // 0.0 = only major changes, 1.0 = all changes
+}
+
+message ChangeResponse {
+  bytes change_mask = 1;       // Binary mask of changed areas
+  repeated ChangeRegion regions = 2;
+  float change_percentage = 3;
+}
+
+message ChangeRegion {
+  BoundingBox bbox = 1;
+  string change_type = 2;     // "new_construction", "removal", "activity_change"
+  float significance = 3;
+  GeoPoint geo_center = 4;
+}
+
+message EnhanceRequest {
+  bytes image_data = 1;
+  string image_path = 2;
+  int32 scale_factor = 3;     // 2x or 4x
+}
+
+message EnhanceResponse {
+  bytes enhanced_image = 1;
+  string enhanced_path = 2;
+}
+
+message HealthRequest {}
+message HealthResponse {
+  bool ready = 1;
+  repeated string loaded_models = 2;
+  int64 gpu_memory_used_mb = 3;
+  int64 gpu_memory_total_mb = 4;
+}
