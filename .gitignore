@@ -13,3 +13,6 @@ data/imagery/
 !data/samples/*.tif
 .ruff_cache/
 .mypy_cache/
+yolov8m.pt
+*.pt
+bin/
