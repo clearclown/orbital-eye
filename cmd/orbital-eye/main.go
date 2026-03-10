@@ -13,6 +13,7 @@ import (
 	"github.com/clearclown/orbital-eye/internal/config"
 	"github.com/clearclown/orbital-eye/internal/detector"
 	"github.com/clearclown/orbital-eye/internal/geo"
+	"github.com/clearclown/orbital-eye/internal/report"
 )
 
 var version = "0.1.0"
@@ -28,6 +29,8 @@ func main() {
 		cmdFetch(os.Args[2:])
 	case "detect":
 		cmdDetect(os.Args[2:])
+	case "report":
+		cmdReport(os.Args[2:])
 	case "monitor":
 		cmdMonitor(os.Args[2:])
 	case "search":
@@ -52,6 +55,7 @@ Usage:
 Commands:
   fetch       Fetch satellite imagery for a location
   detect      Detect objects in satellite imagery
+  report      Generate intelligence report from detection results
   monitor     Monitor a location for changes
   search      Search for imagery and detect objects in one step
   health      Check AI worker status
@@ -229,6 +233,65 @@ func cmdSearch(args []string) {
 	fmt.Printf("\n✅ Results: %d objects detected\n", len(resp.Detections))
 	for i, det := range resp.Detections {
 		fmt.Printf("  [%d] %s (%.1f%%)\n", i+1, det.ClassName, det.Confidence*100)
+	}
+}
+
+func cmdReport(args []string) {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	inputFile := fs.String("input", "", "Path to detection results JSON (from detect --json)")
+	location := fs.String("location", "", "Location name for report header")
+	lat := fs.Float64("lat", 0, "Latitude (for metadata)")
+	lon := fs.Float64("lon", 0, "Longitude (for metadata)")
+	period := fs.String("period", "", "Analysis period (e.g. 30d)")
+	geojson := fs.String("geojson", "", "Output path for GeoJSON file")
+	outFile := fs.String("out", "", "Output path for text report (default: stdout)")
+	fs.Parse(args)
+
+	if *inputFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --input is required (path to detect --json output)")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	result, err := report.LoadDetectResult(*inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	summary := report.Summarize(result)
+	meta := report.ReportMeta{
+		Location: *location,
+		Lat:      *lat,
+		Lon:      *lon,
+		Period:   *period,
+		Source:   result.ModelVersion,
+	}
+
+	// Write text report
+	w := os.Stdout
+	if *outFile != "" {
+		f, err := os.Create(*outFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating report file: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		w = f
+	}
+	report.PrintText(summary, meta, w)
+
+	if *outFile != "" {
+		fmt.Fprintf(os.Stderr, "Report saved to: %s\n", *outFile)
+	}
+
+	// Write GeoJSON if requested
+	if *geojson != "" {
+		if err := report.WriteGeoJSON(summary, *geojson); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing GeoJSON: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "GeoJSON saved to: %s\n", *geojson)
 	}
 }
 
